@@ -1,0 +1,335 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rfc xmlns:xi="http://www.w3.org/2001/XInclude"
+     version="3"
+     docName="draft-alcapacit-asots-ots-01"
+     category="exp"
+     ipr="trust200902"
+     submissionType="independent"
+     xml:lang="en">
+
+  <front>
+    <title abbrev="OTS">Oblivious Transport Security (OTS) Version 1</title>
+    <seriesInfo name="Internet-Draft" value="draft-alcapacit-asots-ots-01"/>
+    <author fullname="Mohamed Daud Mohamed" initials="M. D." surname="Mohamed">
+      <organization>Alcapacit Services (ZatQasim)</organization>
+      <address>
+        <email>alcapacit@gmail.com</email>
+        <uri>https://github.com/Alcapacit</uri>
+      </address>
+    </author>
+    <date year="2026" month="November" day="25"/>
+    <abstract>
+      <t>This document specifies Version 1 of the Oblivious Transport Security (OTS) protocol. OTS provides a connection-oriented, encrypted, and authenticated transport channel that operates independently of the underlying carrier network. Unlike TLS, OTS eliminates plaintext handshake metadata, client implementation fingerprints, traffic-analysis side channels, and cross-epoch network-layer address correlation by enforcing fixed-size datagrams, constant-rate transmission scheduling, cryptographic path binding, and synchronized ephemeral endpoint rotation without third-party proxies or relays.</t>
+    </abstract>
+  </front>
+
+  <middle>
+    <section anchor="introduction">
+      <name>Introduction</name>
+      <t>Conventional transport security protocols such as TLS 1.3 protect application-layer confidentiality and integrity but expose significant metadata to passive network observers. This metadata includes plaintext Server Name Indication (SNI) fields, cipher and extension preferences that fingerprint client implementations, variable packet lengths, inter-packet arrival timings that reveal application behavior and throughput, and persistent network-layer identifiers.</t>
+      <t>Oblivious Transport Security (OTS) eliminates these leaks natively at the transport layer without relying on third-party proxies, relays, or peer-to-peer forwarding networks. Every OTS datagram has an identical wire length, every endpoint uses a single mandatory cryptographic suite without feature negotiation, return delivery state is bound dynamically through cryptographic path validation, and endpoints transmit at deterministic intervals using indistinguishable cover frames when application data is absent.</t>
+    </section>
+
+    <section anchor="conventions-and-terminology">
+      <name>Conventions and Terminology</name>
+      <t>The key words "<bcp14>MUST</bcp14>", "<bcp14>MUST NOT</bcp14>", "<bcp14>REQUIRED</bcp14>", "<bcp14>SHALL</bcp14>", "<bcp14>SHALL NOT</bcp14>", "<bcp14>SHOULD</bcp14>", "<bcp14>SHOULD NOT</bcp14>", "<bcp14>RECOMMENDED</bcp14>", "<bcp14>NOT RECOMMENDED</bcp14>", "<bcp14>MAY</bcp14>", and "<bcp14>OPTIONAL</bcp14>" in this document are to be interpreted as described in BCP 14 <xref target="RFC2119"/> <xref target="RFC8174"/> when, and only when, they appear in all capitals, as shown here.</t>
+      <t>All multi-octet integer fields in this specification are encoded in network byte order (big-endian).</t>
+      <dl newline="false" spacing="normal">
+        <dt>Initiator (Client):</dt>
+        <dd>The endpoint that initiates an OTS session by transmitting Flight 1.</dd>
+        <dt>Responder (Server):</dt>
+        <dd>The endpoint that accepts an OTS session upon validating Flight 1 and responds with Flight 2.</dd>
+        <dt>Connection ID (CID):</dt>
+        <dd>A 64-bit cryptographically random identifier used to bind OTS session state independently of source and destination IP addresses or transport port numbers.</dd>
+        <dt>Cover Frame:</dt>
+        <dd>An authenticated, encrypted inner frame carrying zero application data, transmitted to maintain a constant wire bitrate.</dd>
+        <dt>Rotation Epoch:</dt>
+        <dd>The bounded interval of transmitted datagrams or elapsed seconds after which an initiator atomically rotates both its active network-layer source address and its active Connection ID.</dd>
+        <dt>Tick Interval (T):</dt>
+        <dd>The fixed interval, in milliseconds, at which an endpoint transmits a single 1280-octet OTS datagram.</dd>
+      </dl>
+    </section>
+
+    <section anchor="protocol-overview">
+      <name>Protocol Overview</name>
+      <t>OTS is a carrier-agnostic transport security protocol. While primarily deployed over UDP <xref target="RFC0768"/>, OTS operates identically over any bidirectional datagram or byte-stream carrier -- including web endpoints, direct IPv6 sockets, local links, and peer-to-peer transports -- without requiring changes to the protocol state machine. When carried over a byte-stream transport, datagrams are framed back-to-back as fixed 1280-octet records without additional length prefixes.</t>
+      <t>An OTS session consists of a single round-trip (1-RTT) cryptographic handshake followed by a bidirectional sequence of fixed-length datagrams. OTS decouples session identity and metadata protection entirely from the underlying carrier network, operating purely between the two communicating endpoints with zero third-party infrastructure.</t>
+      <t>To prevent implementation fingerprinting, OTS defines no version negotiation, no cipher-suite negotiation, and no optional handshake extensions. Any datagram deviating from the exact byte layout defined in <xref target="wire-format"/> <bcp14>MUST</bcp14> be silently discarded without generating an error response.</t>
+    </section>
+
+    <section anchor="wire-format">
+      <name>Wire Format</name>
+      <t>All OTS datagrams <bcp14>MUST</bcp14> be exactly 1280 octets in length, matching the IPv6 minimum link MTU <xref target="RFC8200"/> to prevent network-layer fragmentation. Datagrams of any other length <bcp14>MUST</bcp14> be silently discarded.</t>
+
+      <section anchor="outer-datagram-layout">
+        <name>Outer Datagram Header (Bytes 0 to 19 -- 20 Octets)</name>
+        <t>Every 1280-octet OTS datagram begins with an identical 20-octet cleartext header and concludes with a 16-octet Poly1305 authentication tag (Bytes 1264 to 1279):</t>
+        <ol spacing="normal" type="1">
+          <li>Version (Byte 0 -- 1 octet): 8-bit unsigned integer. For this specification, the value <bcp14>MUST</bcp14> be 0x01.</li>
+          <li>Type (Byte 1 -- 1 octet): 8-bit unsigned integer identifying the datagram class: 0x01 for a Handshake Datagram, or 0x02 for a Protected Data Datagram.</li>
+          <li>Reserved (Bytes 2 to 3 -- 2 octets): 16-bit field. <bcp14>MUST</bcp14> be set to 0x0000 by the sender and verified as 0x0000 by the receiver.</li>
+          <li>Connection ID (Bytes 4 to 11 -- 8 octets): 64-bit opaque identifier. For Client Initial Handshake Datagrams (Flight 1), this field <bcp14>MUST</bcp14> contain a cryptographically random 64-bit value generated by the initiator. For Server Response Handshake Datagrams (Flight 2), this field <bcp14>MUST</bcp14> echo the initiator's Connection ID from Flight 1.</li>
+          <li>Packet Number (Bytes 12 to 19 -- 8 octets): 64-bit monotonically increasing unsigned integer starting at 0 for each endpoint's independent send sequence. Used to construct the 96-bit ChaCha20-Poly1305 nonce by left-padding the 64-bit big-endian Packet Number with 32 zero bits (0x00000000).</li>
+        </ol>
+      </section>
+
+      <section anchor="handshake-datagram-layout">
+        <name>Handshake Datagram Layout (Type 0x01)</name>
+        <t>For Handshake Datagrams (Type 0x01), Bytes 20 to 1279 carry an unencrypted ephemeral X25519 public key followed by an AEAD-encrypted handshake payload:</t>
+        <ol spacing="normal" type="1">
+          <li>Ephemeral Public Key (Bytes 20 to 51 -- 32 octets): The sender's 32-octet ephemeral X25519 public key (ec_pub in Flight 1; es_pub in Flight 2).</li>
+          <li>Encrypted Handshake Payload (Bytes 52 to 1263 -- 1212 octets): Ciphertext encrypted with ChaCha20-Poly1305 using the handshake key defined in <xref target="handshake-protocol"/>. The 52-octet prefix (Bytes 0 to 51, comprising the Outer Datagram Header and Ephemeral Public Key) <bcp14>MUST</bcp14> be passed as Additional Authenticated Data (AAD).</li>
+          <li>Authentication Tag (Bytes 1264 to 1279 -- 16 octets): 16-octet Poly1305 tag produced by ChaCha20-Poly1305.</li>
+        </ol>
+      </section>
+
+      <section anchor="protected-data-datagram-layout">
+        <name>Protected Data Datagram Layout (Type 0x02)</name>
+        <t>For Protected Data Datagrams (Type 0x02), Bytes 20 to 1279 carry an AEAD-encrypted inner frame:</t>
+        <ol spacing="normal" type="1">
+          <li>Encrypted Inner Frame (Bytes 20 to 1263 -- 1244 octets): Ciphertext encrypted with ChaCha20-Poly1305 under the sender's directional traffic key (<xref target="key-schedule"/>). The 20-octet Outer Datagram Header (Bytes 0 to 19) <bcp14>MUST</bcp14> be passed as Additional Authenticated Data (AAD). Upon decryption, the 1244-octet plaintext conforms to <xref target="decrypted-inner-frame-layout"/>.</li>
+          <li>Authentication Tag (Bytes 1264 to 1279 -- 16 octets): 16-octet Poly1305 tag produced by ChaCha20-Poly1305.</li>
+        </ol>
+      </section>
+
+      <section anchor="decrypted-inner-frame-layout">
+        <name>Decrypted Inner Frame Layout (1244 Octets Total)</name>
+        <ol spacing="normal" type="1">
+          <li>Frame Type (Byte 0 -- 1 octet): 0x00 for a Cover Frame, 0x01 for Stream Data, or 0x02 for Control and Acknowledgment.</li>
+          <li>Payload Length (Bytes 1 to 2 -- 2 octets): 16-bit unsigned integer specifying valid octets in Frame Data (0 to 1241). Values greater than 1241 <bcp14>MUST</bcp14> cause the datagram to be silently discarded. For Cover Frames (0x00), this field <bcp14>MUST</bcp14> be 0.</li>
+          <li>Frame Data and Zero Padding (Bytes 3 to 1243 -- 1241 octets): Valid payload octets (Bytes 3 to 3 + Payload Length - 1) followed by zero padding. All octets from offset (3 + Payload Length) through 1243 <bcp14>MUST</bcp14> be set to 0x00 by the sender and verified as 0x00 by the receiver.</li>
+        </ol>
+      </section>
+
+      <section anchor="control-frame-format">
+        <name>Control and Acknowledgment Frame Format (Frame Type 0x02)</name>
+        <t>When Frame Type is 0x02, the valid octets within Frame Data (bounded by Payload Length) consist of one or more concatenated Type-Length-Value (TLV) control records. Any trailing octets within Payload Length <bcp14>MUST</bcp14> form complete TLV records; malformed or truncated TLVs <bcp14>MUST</bcp14> cause the datagram to be silently discarded.</t>
+        <t>Each TLV record has a 1-octet Control Type, a 2-octet Control Length (specifying the octet length of Control Value), and a variable-length Control Value:</t>
+        <dl newline="false" spacing="normal">
+          <dt>0x01 -- ACK Record (Control Length = 16 octets):</dt>
+          <dd>Carries an 8-octet Largest Acknowledged Packet Number followed by an 8-octet ACK Bitmask where bit i (0 &lt;= i &lt;= 63, from least significant bit) is set to 1 if datagram (Largest Acknowledged Packet Number - i) has been received and authenticated, and 0 otherwise.</dd>
+          <dt>0x02 -- CID Pool Replenishment (Control Length = 8 * N octets, 1 &lt;= N &lt;= 16):</dt>
+          <dd>Transmitted by the responder to replenish the initiator's pool of pre-negotiated 64-bit Connection IDs for upcoming Rotation Epochs (<xref target="ephemeral-address-rotation"/>). Each 8-octet entry is a cryptographically random 64-bit Connection ID.</dd>
+          <dt>0x03 -- Session Close (Control Length = 2 octets):</dt>
+          <dd>Carries a 16-bit unsigned Reason Code (0x0000 for normal closure). Upon transmitting or authenticating a Session Close TLV, the endpoint transitions to the Closed state and ceases transmission.</dd>
+        </dl>
+      </section>
+    </section>
+
+    <section anchor="cryptographic-specification">
+      <name>Cryptographic Specification</name>
+      <t>OTS Version 1 mandates the following primitives exclusively:</t>
+      <dl newline="false" spacing="normal">
+        <dt>Key Exchange:</dt>
+        <dd>X25519 <xref target="RFC7748"/></dd>
+        <dt>Key Derivation Function:</dt>
+        <dd>HKDF-SHA256 <xref target="RFC5869"/></dd>
+        <dt>Authenticated Encryption:</dt>
+        <dd>ChaCha20-Poly1305 <xref target="RFC8439"/></dd>
+        <dt>Server Authentication:</dt>
+        <dd>Ed25519 <xref target="RFC8032"/></dd>
+      </dl>
+      <t>No alternative algorithms, cipher suites, or parameter sets are permitted. Implementations <bcp14>MUST</bcp14> reject all-zero X25519 shared secrets as specified in Section 6.1 of <xref target="RFC7748"/>.</t>
+    </section>
+
+    <section anchor="handshake-protocol">
+      <name>Handshake Protocol</name>
+      <t>Prior to initiating a connection, the client obtains the server's 32-octet static X25519 public key (ss_pub) and 32-octet Ed25519 public verification key (sv_pub) via an authenticated DNS SVCB/HTTPS resource record <xref target="RFC9460"/> or out-of-band service configuration.</t>
+
+      <section anchor="client-initial">
+        <name>Client Initial (Flight 1)</name>
+        <t>To initiate a session, the client performs the following steps:</t>
+        <ol spacing="normal" type="1">
+          <li>
+            <t>Generates a fresh 32-octet ephemeral X25519 key pair (ec_priv, ec_pub) and a cryptographically random 64-bit Connection ID (cid_0).</t>
+          </li>
+          <li>
+            <t>Computes the static-ephemeral shared secret: ss_1 = X25519(ec_priv, ss_pub).</t>
+          </li>
+          <li>
+            <t>Derives the 32-octet Flight 1 encryption key using HKDF-Extract and HKDF-Expand:</t>
+            <artwork align="left">
+hs_prk_1 = HKDF-Extract(salt = ec_pub || ss_pub,
+                        IKM = ss_1)
+k_hs_1   = HKDF-Expand(PRK = hs_prk_1,
+                       info = "ots v1 flight1", L = 32)
+            </artwork>
+          </li>
+          <li>
+            <t>Constructs the 1212-octet Flight 1 plaintext payload:</t>
+            <ul>
+              <li>Bytes 0 to 1 (2 octets): SNI Length (sni_len, 1 to 255).</li>
+              <li>Bytes 2 to (2 + sni_len - 1): UTF-8 encoded target Server Name Indication (SNI) without trailing null bytes.</li>
+              <li>Bytes (2 + sni_len) to (9 + sni_len) (8 octets): 64-bit unsigned Unix timestamp in seconds.</li>
+              <li>Bytes (10 + sni_len) to (41 + sni_len) (32 octets): Cryptographically random anti-replay nonce (client_nonce).</li>
+              <li>Remaining octets through Byte 1211: Zero padding (0x00).</li>
+            </ul>
+          </li>
+          <li>
+            <t>Sets Outer Datagram Header fields: Version = 0x01, Type = 0x01, Reserved = 0x0000, Connection ID = cid_0, Packet Number = 0. Places ec_pub in Bytes 20 to 51, encrypts the 1212-octet plaintext with ChaCha20-Poly1305(key = k_hs_1, nonce = 0, AAD = Bytes 0..51) into Bytes 52 to 1263, and writes the 16-octet authentication tag to Bytes 1264 to 1279.</t>
+          </li>
+        </ol>
+      </section>
+
+      <section anchor="server-response">
+        <name>Server Response (Flight 2)</name>
+        <t>Upon receiving a 1280-octet Handshake Datagram (Type 0x01) with Packet Number = 0, the server:</t>
+        <ol spacing="normal" type="1">
+          <li>
+            <t>Extracts ec_pub (Bytes 20 to 51), computes ss_1 = X25519(ss_priv, ec_pub), derives k_hs_1, and verifies the ChaCha20-Poly1305 tag over AAD = Bytes 0..51. If authentication fails or zero padding is non-zero, the datagram <bcp14>MUST</bcp14> be silently discarded.</t>
+          </li>
+          <li>
+            <t>Validates that the decrypted Unix timestamp is within +/- 30 seconds of the server's clock and verifies that client_nonce has not been seen within the active replay cache window. Upon validation, the server inserts client_nonce into its replay cache and binds the session's initial return delivery path to the authenticated source socket of Flight 1.</t>
+          </li>
+          <li>
+            <t>Generates a fresh 32-octet ephemeral X25519 key pair (es_priv, es_pub) and computes the ephemeral-ephemeral shared secret: ss_2 = X25519(es_priv, ec_pub).</t>
+          </li>
+          <li>
+            <t>Derives the Flight 2 encryption key and directional application traffic keys (<xref target="key-schedule"/>) using HKDF-SHA256:</t>
+            <artwork align="left">
+hs_prk_2 = HKDF-Extract(salt = hs_prk_1, IKM = ss_2)
+k_hs_2   = HKDF-Expand(PRK = hs_prk_2,
+                       info = "ots v1 flight2", L = 32)
+            </artwork>
+          </li>
+          <li>
+            <t>Computes the 32-octet handshake transcript hash and signs it using its Ed25519 private signing key to produce a 64-octet signature (sig):</t>
+            <artwork align="left">
+transcript = SHA-256("ots v1 transcript" || cid_0 ||
+                     ec_pub || ss_pub ||
+                     client_nonce || es_pub)
+            </artwork>
+          </li>
+          <li>
+            <t>Constructs the 1212-octet Flight 2 plaintext payload:</t>
+            <ul>
+              <li>Bytes 0 to 63 (64 octets): Ed25519 signature (sig).</li>
+              <li>Bytes 64 to 65 (2 octets): Negotiated Tick Interval T in milliseconds (16-bit unsigned integer; <bcp14>MUST</bcp14> be &gt;= 1).</li>
+              <li>Byte 66 (1 octet): Initial CID Pool Count (N, where 1 &lt;= N &lt;= 16).</li>
+              <li>Bytes 67 to (67 + 8*N - 1): N cryptographically random 64-bit Connection IDs for subsequent Rotation Epochs.</li>
+              <li>Remaining octets through Byte 1211: Zero padding (0x00).</li>
+            </ul>
+          </li>
+          <li>
+            <t>Sets Outer Datagram Header fields: Version = 0x01, Type = 0x01, Reserved = 0x0000, Connection ID = cid_0, Packet Number = 0. Places es_pub in Bytes 20 to 51, encrypts the 1212-octet plaintext with ChaCha20-Poly1305(key = k_hs_2, nonce = 0, AAD = Bytes 0..51) into Bytes 52 to 1263, and writes the 16-octet authentication tag to Bytes 1264 to 1279.</t>
+          </li>
+        </ol>
+        <t>Upon receiving Flight 2, the client extracts es_pub, computes ss_2 = X25519(ec_priv, es_pub), derives k_hs_2, decrypts and authenticates the payload, verifies zero padding, and verifies sig against sv_pub over transcript. If any verification step fails, the client <bcp14>MUST</bcp14> abort the session immediately.</t>
+      </section>
+
+      <section anchor="key-schedule">
+        <name>Application Traffic Key Schedule</name>
+        <t>To prevent nonce collisions across bidirectional traffic, OTS derives independent 32-octet ChaCha20-Poly1305 keys for client-to-server (initiator) and server-to-client (responder) Protected Data Datagrams from hs_prk_2:</t>
+        <artwork align="left">
+client_app_key = HKDF-Expand(PRK = hs_prk_2,
+                             info = "ots v1 c2s traffic",
+                             L = 32)
+server_app_key = HKDF-Expand(PRK = hs_prk_2,
+                             info = "ots v1 s2c traffic",
+                             L = 32)
+        </artwork>
+        <t>Both endpoints initialize their outbound Protected Data Packet Number counter to 0. Each endpoint increments its own outbound Packet Number by 1 for every Protected Data Datagram transmitted. Once Flight 2 is completed, both endpoints <bcp14>MUST</bcp14> securely erase ec_priv, es_priv, ss_1, ss_2, k_hs_1, and k_hs_2 from memory.</t>
+      </section>
+    </section>
+
+    <section anchor="traffic-shaping">
+      <name>Traffic Shaping and Metadata Suppression</name>
+
+      <section anchor="isochronous-transmission">
+        <name>Isochronous Transmission</name>
+        <t>Once Flight 2 is processed, both endpoints <bcp14>MUST</bcp14> initialize a periodic timer set to Tick Interval T. At each tick expiration, the endpoint <bcp14>MUST</bcp14> emit exactly one 1280-octet Protected Data Datagram (Type 0x02).</t>
+        <t>If outbound application data is queued, the endpoint constructs a Stream Data frame (0x01). If control or acknowledgment records are pending without application data, the endpoint constructs a Control and Acknowledgment frame (0x02). If neither is queued, the endpoint <bcp14>MUST</bcp14> construct a Cover Frame (0x00). All frame types undergo identical AEAD encryption and produce wire-indistinguishable datagrams.</t>
+      </section>
+
+      <section anchor="fingerprint-uniformity">
+        <name>Fingerprint Uniformity</name>
+        <t>Implementations <bcp14>MUST NOT</bcp14> vary packet sizes, padding bytes, handshake field ordering, or initial transmission parameters based on host operating system, application type, or user configuration.</t>
+      </section>
+    </section>
+
+    <section anchor="cryptographic-path-binding">
+      <name>Cryptographic Path Binding and Address Rotation</name>
+      <t>To prevent passive path observers from correlating endpoints via network-layer addresses without relying on intermediary relays or NAT-fragile static tokens, OTS binds session state exclusively to cryptographic identifiers and rotates carrier addresses dynamically.</t>
+
+      <section anchor="dynamic-path-binding">
+        <name>Dynamic Cryptographic Path Binding</name>
+        <t>Responders <bcp14>MUST NOT</bcp14> treat network-layer IP addresses or transport ports as persistent client identifiers. Return delivery paths are bound solely upon verifying the ChaCha20-Poly1305 authentication tag of an incoming datagram carrying a valid active or pre-negotiated Connection ID. This allows OTS to traverse consumer NATs, carrier-grade NATs (CGNAT), and multi-homed interfaces seamlessly.</t>
+      </section>
+
+      <section anchor="ephemeral-address-rotation">
+        <name>Synchronized Ephemeral Address Rotation</name>
+        <t>On carriers supporting dynamic address allocation (such as IPv6 temporary addresses <xref target="RFC8981"/>), an OTS initiator <bcp14>MUST</bcp14> maintain a rolling pool of ephemeral source addresses. At each Rotation Epoch (default: 256 datagrams or 10 seconds, whichever occurs first), the initiator <bcp14>MUST</bcp14> atomically switch both its outbound source IP address and its active 64-bit Connection ID to the next unused Connection ID from its pre-negotiated pool (<xref target="server-response"/> and <xref target="control-frame-format"/>).</t>
+        <t>The outbound 64-bit Packet Number <bcp14>MUST NOT</bcp14> reset upon Connection ID rotation; it continues incrementing monotonically across epochs under the active directional traffic key to guarantee strict AEAD nonce uniqueness.</t>
+        <t>Upon verifying the AEAD tag of the first datagram arriving under the newly activated Connection ID, the responder updates its return socket state to the new source address and port, retires the previous Connection ID, and replenishes the initiator's Connection ID pool via a Control Frame (0x02, TLV Type 0x02). Because datagram size and transmission cadence remain invariant across transitions, passive path observers cannot link pre-rotation and post-rotation traffic flows.</t>
+      </section>
+
+      <section anchor="anycast-service-blinding">
+        <name>Multi-Tenant Anycast Service Blinding</name>
+        <t>OTS responders <bcp14>SHOULD</bcp14> deploy behind shared Anycast IP prefixes. Service selection is bound exclusively to the encrypted SNI carried inside Flight 1 (<xref target="client-initial"/>), ensuring destination IP addresses do not identify specific hostnames or applications to on-path observers.</t>
+      </section>
+    </section>
+
+    <section anchor="security-considerations">
+      <name>Security Considerations</name>
+      <t>OTS is a standalone, two-party transport protocol and does not rely on third-party proxies, relays, or peer-to-peer forwarding networks. Transport metadata, implementation fingerprints, transmission rates, and cross-epoch network address correlation are mitigated natively between the communicating endpoints.</t>
+      <t>Within a single Rotation Epoch, an on-path observer located directly on the physical link between initiator and responder can observe the active ephemeral carrier address pair for that window; however, synchronized ephemeral address and Connection ID rotation prevents persistent tracking or session reconstruction across epochs.</t>
+      <t>Replay attacks on Flight 1 are mitigated via timestamp window enforcement (+/- 30 seconds) and a server-side cache of seen 32-octet client_nonce values retained for at least 60 seconds. Replay attacks during active sessions are mitigated via strict monotonic enforcement of the 64-bit Packet Number and a 64-packet sliding anti-replay window. Duplicate or out-of-window datagrams <bcp14>MUST</bcp14> be silently dropped before updating return path bindings.</t>
+      <t>Because ChaCha20-Poly1305 security relies on strict nonce uniqueness, an endpoint <bcp14>MUST</bcp14> terminate the session if its outbound 64-bit Packet Number approaches 2^64 - 1. Independent directional keys (client_app_key and server_app_key) ensure that identical Packet Numbers transmitted by initiator and responder never reuse a (key, nonce) pair.</t>
+    </section>
+
+    <section anchor="iana-considerations">
+      <name>IANA Considerations</name>
+      <t>This document requests two IANA actions:</t>
+
+      <section anchor="iana-udp-port">
+        <name>Service Name and Transport Protocol Port Number Registry</name>
+        <t>IANA is requested to assign a User Port in the "Service Name and Transport Protocol Port Number Registry" <xref target="RFC6335"/> with the following parameters:</t>
+        <dl newline="false" spacing="normal">
+          <dt>Service Name:</dt>
+          <dd>ots</dd>
+          <dt>Transport Protocol:</dt>
+          <dd>udp</dd>
+          <dt>Assignee:</dt>
+          <dd>Mohamed Daud Mohamed (alcapacit@gmail.com)</dd>
+          <dt>Contact:</dt>
+          <dd>Mohamed Daud Mohamed (alcapacit@gmail.com)</dd>
+          <dt>Description:</dt>
+          <dd>Oblivious Transport Security</dd>
+          <dt>Reference:</dt>
+          <dd>This document</dd>
+        </dl>
+      </section>
+
+      <section anchor="iana-alpn">
+        <name>TLS Application-Layer Protocol Negotiation (ALPN) Protocol IDs</name>
+        <t>IANA is requested to register the following entry in the "TLS Application-Layer Protocol Negotiation (ALPN) Protocol IDs" registry <xref target="RFC7301"/> for deployments encapsulating OTS over TLS-based carriers:</t>
+        <dl newline="false" spacing="normal">
+          <dt>Protocol:</dt>
+          <dd>Oblivious Transport Security (OTS) Version 1</dd>
+          <dt>Identification Sequence:</dt>
+          <dd>0x6f 0x74 0x73 ("ots")</dd>
+          <dt>Reference:</dt>
+          <dd>This document</dd>
+        </dl>
+      </section>
+    </section>
+  </middle>
+
+  <back>
+    <references>
+      <name>Normative References</name>
+      <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.0768.xml"/>
+      <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.2119.xml"/>
+      <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.5869.xml"/>
+      <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.6335.xml"/>
+      <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.7301.xml"/>
+      <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.7748.xml"/>
+      <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.8032.xml"/>
+      <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.8174.xml"/>
+      <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.8200.xml"/>
+      <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.8439.xml"/>
+      <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.8981.xml"/>
+      <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.9460.xml"/>
+    </references>
+  </back>
+</rfc>
